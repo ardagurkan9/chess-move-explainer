@@ -16,6 +16,7 @@ class Settings:
     """Validated application settings."""
 
     stockfish_path: Path
+    ai_provider: str | None = None
     ai_api_key: str | None = None
     ai_model: str | None = None
 
@@ -47,7 +48,7 @@ def load_settings(*, env_file: str | Path | None = None) -> Settings:
 
     return Settings(
         stockfish_path=stockfish_path.resolve(),
-        ai_api_key=os.getenv("AI_API_KEY") or None,
-        ai_model=os.getenv("AI_MODEL") or None,
+        ai_provider=os.getenv("AI_PROVIDER", "").strip().lower() or None,
+        ai_api_key=os.getenv("AI_API_KEY", "").strip() or None,
+        ai_model=os.getenv("AI_MODEL", "").strip() or None,
     )
-

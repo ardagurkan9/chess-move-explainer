@@ -207,7 +207,7 @@ persisted through repository interfaces.
 - [Stockfish](https://stockfishchess.org/)
 - Streamlit
 - pytest
-- A language model API or local model
+- Google Gemini API (`gemini-3.1-flash-lite` by default)
 - GitHub Actions
 - Docker
 - PostgreSQL
@@ -272,7 +272,7 @@ The exact installation steps will be finalized as the application code and depen
 
 - Python 3.11 or later
 - A Stockfish executable compatible with your operating system
-- Optionally, a language model API key or a local model
+- Optionally, a Gemini API key for AI explanations
 
 ### Development Environment
 
@@ -309,9 +309,16 @@ Copy `.env.example` to `.env` and enter your own values:
 
 ```env
 STOCKFISH_PATH=/path/to/stockfish
+AI_PROVIDER=gemini
 AI_API_KEY=your_api_key
-AI_MODEL=model_name
+AI_MODEL=gemini-3.1-flash-lite
 ```
+
+Gemini is called only for Inaccuracy, Mistake, and Blunder classifications.
+Missing configuration, timeouts, API errors, empty responses, and responses
+that do not reference the verified moves automatically fall back to the
+deterministic template explanation. Stockfish analysis and gameplay never
+depend on the language model being available.
 
 The real `.env` file and the Stockfish executable must not be committed to the repository.
 
@@ -339,7 +346,7 @@ pytest
 - [x] Move classification system
 - [x] Terminal-based game loop
 - [x] Template-based explanations
-- [ ] Language model integration with a safe fallback
+- [x] Language model integration with a safe fallback
 - [ ] End-of-game report and PGN output
 - [ ] Evidence-based mistake-theme detection
 - [ ] PostgreSQL, SQLAlchemy, Alembic, and repository infrastructure

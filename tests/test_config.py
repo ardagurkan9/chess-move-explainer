@@ -30,11 +30,13 @@ def test_load_settings_reads_valid_environment(
     stockfish_path = tmp_path / "stockfish.exe"
     stockfish_path.touch()
     monkeypatch.setenv("STOCKFISH_PATH", str(stockfish_path))
+    monkeypatch.setenv("AI_PROVIDER", "GEMINI")
     monkeypatch.setenv("AI_API_KEY", "test-key")
     monkeypatch.setenv("AI_MODEL", "test-model")
 
     settings = load_settings()
 
     assert settings.stockfish_path == stockfish_path.resolve()
+    assert settings.ai_provider == "gemini"
     assert settings.ai_api_key == "test-key"
     assert settings.ai_model == "test-model"

@@ -69,7 +69,7 @@ def test_invalid_color_and_move_are_retried() -> None:
     assert any("Please enter" in line for line in output)
     assert sum("Invalid move" in line for line in output) == 2
     assert any("Analysis:" in line for line in output)
-    assert any("Coach:" in line for line in output)
+    assert any("Coach [Template]:" in line for line in output)
 
 
 def test_choosing_black_makes_stockfish_play_first() -> None:

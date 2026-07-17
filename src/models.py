@@ -85,3 +85,4 @@ class CommentaryResult:
     text: str
     level: UserLevel
     source: str = "template"
+    fallback_reason: str | None = None

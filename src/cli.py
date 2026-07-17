@@ -5,7 +5,7 @@ from collections.abc import Callable
 import chess
 
 from src.analysis import AnalysisError, MoveAnalyzer, PositionAnalyzer
-from src.commentary import TemplateCommentary
+from src.commentary import CommentaryGenerator, CommentaryService
 from src.game import ChessGame, MoveError
 from src.models import EngineResult, MoveAnalysis, MoveClassification, UserLevel
 from src.move_classifier import MoveClassifier
@@ -25,6 +25,7 @@ class TerminalGame:
         input_fn: InputFunction = input,
         output_fn: OutputFunction = print,
         game_factory: Callable[[], ChessGame] = ChessGame,
+        commentary: CommentaryGenerator | None = None,
     ) -> None:
         self.engine = engine
         self.depth = depth
@@ -33,7 +34,7 @@ class TerminalGame:
         self.game_factory = game_factory
         self.move_analyzer = MoveAnalyzer(engine)
         self.classifier = MoveClassifier()
-        self.commentary = TemplateCommentary()
+        self.commentary = commentary or CommentaryService()
         self.user_level = UserLevel.BEGINNER
 
     def run(self) -> str | None:
@@ -156,7 +157,7 @@ class TerminalGame:
         explanation = self.commentary.generate(
             analysis, classification, level=self.user_level
         )
-        self.output(f"Coach: {explanation.text}")
+        self.output(f"Coach [{explanation.source.title()}]: {explanation.text}")
 
     @staticmethod
     def _format_score(result: EngineResult) -> str:

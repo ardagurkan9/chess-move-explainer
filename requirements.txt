@@ -1,4 +1,4 @@
 python-chess>=1.999,<2.0
 python-dotenv>=1.0,<2.0
+google-genai>=1.0,<2.0
 streamlit>=1.36,<2.0
-
