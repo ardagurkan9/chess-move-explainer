@@ -192,6 +192,24 @@ def test_commentary_service_skips_ai_for_good_moves() -> None:
     ai.generate.assert_not_called()
 
 
+def test_review_commentary_uses_ai_even_for_a_good_incorrect_answer() -> None:
+    ai = MagicMock()
+    ai.generate.return_value = SimpleNamespace(
+        text="b1c3 is playable, but Stockfish's stored solution starts with d2d4.",
+        level=UserLevel.BEGINNER,
+        source="gemini",
+    )
+    service = CommentaryService(ai=ai)
+
+    result = service.generate_for_review(
+        move_analysis(played_move="b1c3", best_move="d2d4", loss=20),
+        classification(MoveQuality.GOOD, 20),
+    )
+
+    assert result.source == "gemini"
+    ai.generate.assert_called_once()
+
+
 @pytest.mark.parametrize(
     "side_effect",
     [TimeoutError("timeout"), GeminiCommentaryError("invalid response")],

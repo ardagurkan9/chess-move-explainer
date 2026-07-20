@@ -1,6 +1,7 @@
 """Terminal user interface for playing an analyzed game against Stockfish."""
 
 from collections.abc import Callable
+from typing import Protocol
 
 import chess
 
@@ -22,9 +23,18 @@ from src.mistake_detector import MistakeDetector
 from src.move_classifier import MoveClassifier
 from src.report import GameReportBuilder
 from src.services.history_service import HistoryService
+from src.services.practice_service import PracticeMoveError, PracticeService
 
 InputFunction = Callable[[str], str]
 OutputFunction = Callable[[str], None]
+
+
+class ConfigurableOpponent(PositionAnalyzer, Protocol):
+    """Engine interface required for an Elo-limited opponent."""
+
+    def elo_range(self) -> tuple[int, int]: ...
+
+    def configure_strength(self, elo: int) -> None: ...
 
 
 class TerminalGame:
@@ -40,6 +50,7 @@ class TerminalGame:
         game_factory: Callable[[], ChessGame] = ChessGame,
         commentary: CommentaryGenerator | None = None,
         history_service: HistoryService | None = None,
+        opponent_engine: ConfigurableOpponent | None = None,
     ) -> None:
         self.engine = engine
         self.depth = depth
@@ -51,6 +62,7 @@ class TerminalGame:
         self.mistake_detector = MistakeDetector()
         self.commentary = commentary or CommentaryService()
         self.history_service = history_service
+        self.opponent_engine = opponent_engine
         self.user_level = UserLevel.BEGINNER
         self.report_builder = GameReportBuilder()
         self.analyzed_moves: list[AnalyzedMove] = []
@@ -60,6 +72,8 @@ class TerminalGame:
         self._show_welcome()
         player_color = self._choose_color()
         self.user_level = self._choose_level()
+        if self.opponent_engine is not None:
+            self._choose_opponent_elo()
         game = self.game_factory()
         self.analyzed_moves = []
 
@@ -155,9 +169,26 @@ class TerminalGame:
             self.output("Please enter 1, 2, or 3.")
 
     def _play_engine_turn(self, game: ChessGame) -> None:
-        result = self.engine.analyze(game.board, depth=self.depth)
+        opponent = self.opponent_engine or self.engine
+        result = opponent.analyze(game.board, depth=self.depth)
         game.play_uci(result.best_move)
         self.output(f"Stockfish plays: {result.best_move}")
+
+    def _choose_opponent_elo(self) -> int:
+        assert self.opponent_engine is not None
+        minimum, maximum = self.opponent_engine.elo_range()
+        while True:
+            raw_value = self.input(
+                f"Choose opponent Elo [{minimum}-{maximum}]: "
+            ).strip()
+            try:
+                elo = int(raw_value)
+                self.opponent_engine.configure_strength(elo)
+            except ValueError:
+                self.output(f"Please enter an Elo between {minimum} and {maximum}.")
+                continue
+            self.output(f"Opponent strength set to approximately {elo} Elo.")
+            return elo
 
     def _show_welcome(self) -> None:
         self.output("Chess Improvement Coach")
@@ -297,3 +328,108 @@ class TerminalGame:
         self.output("")
         self.output("=== PGN ===")
         self.output(report.pgn)
+
+
+class TerminalApplication:
+    """Choose between a Stockfish game and review of saved mistakes."""
+
+    def __init__(
+        self,
+        game: TerminalGame,
+        *,
+        practice_service: PracticeService | None = None,
+    ) -> None:
+        self.game = game
+        self.practice_service = practice_service
+        self.input = game.input
+        self.output = game.output
+
+    def run(self) -> str | None:
+        """Run the selected terminal workflow."""
+        while True:
+            self.output("Chess Improvement Coach")
+            self.output("1. Play against Stockfish")
+            self.output("2. Review past mistakes")
+            choice = self.input("Choose an option [1/2, or 'quit']: ").strip().lower()
+            if choice in {"1", "play"}:
+                return self.game.run()
+            if choice in {"2", "review", "practice"}:
+                self._run_practice()
+                return None
+            if choice in {"quit", "exit", "q"}:
+                return None
+            self.output("Please enter 1, 2, or 'quit'.")
+
+    def _run_practice(self) -> None:
+        if self.practice_service is None:
+            self.output("Practice requires a configured database.")
+            return
+        level = self.game._choose_level()
+
+        while True:
+            try:
+                position = self.practice_service.next_position()
+            except Exception as error:
+                self.output(
+                    "Practice positions could not be loaded "
+                    f"({type(error).__name__})."
+                )
+                return
+            if position is None:
+                self.output("No practice positions are due right now.")
+                return
+
+            board = chess.Board(position.fen)
+            self.output("")
+            self.output("=== Practice Position ===")
+            self.output(TerminalGame._format_board(board))
+            self.output(f"Theme: {position.theme.value}")
+            self.output(f"Previous attempts: {position.attempts}")
+
+            while True:
+                move_text = self.input(
+                    "Find the best move (UCI, or 'quit'): "
+                ).strip()
+                if move_text.lower() in {"quit", "exit", "q"}:
+                    return
+                try:
+                    result = self.practice_service.submit(
+                        position,
+                        move_text,
+                        level=level,
+                    )
+                except PracticeMoveError as error:
+                    self.output(f"Invalid move: {error}")
+                    continue
+                except Exception as error:
+                    self.output(
+                        "Practice answer could not be saved "
+                        f"({type(error).__name__})."
+                    )
+                    return
+                break
+
+            if result.correct:
+                self.output(f"Correct! {result.best_move} is the stored best move.")
+            else:
+                self.output(
+                    f"Not quite. The stored best move was {result.best_move}."
+                )
+                if result.classification is not None:
+                    self.output(
+                        "Analysis: "
+                        f"{result.classification.quality.value} - "
+                        f"{result.classification.reason}"
+                    )
+                if result.theme_detection is not None:
+                    self.output(f"Theme: {result.theme_detection.theme.value}")
+                if result.commentary is not None:
+                    self.output(
+                        "Coach "
+                        f"[{result.commentary.source.title()}]: "
+                        f"{result.commentary.text}"
+                    )
+            self.output(
+                "Next review: "
+                f"{result.updated_position.next_review_at:%Y-%m-%d %H:%M UTC}"
+            )

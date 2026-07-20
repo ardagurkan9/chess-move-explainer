@@ -1,7 +1,7 @@
 import chess
 from unittest.mock import MagicMock
 
-from src.cli import TerminalGame
+from src.cli import TerminalApplication, TerminalGame
 from src.models import (
     EngineResult,
     MoveAnalysis,
@@ -36,6 +36,19 @@ class ScriptedEngine:
             pv=(best_move,),
             depth=depth,
         )
+
+
+class ConfigurableScriptedEngine(ScriptedEngine):
+    def __init__(self) -> None:
+        self.configured_elo: int | None = None
+
+    def elo_range(self) -> tuple[int, int]:
+        return 1320, 3190
+
+    def configure_strength(self, elo: int) -> None:
+        if not 1320 <= elo <= 3190:
+            raise ValueError("unsupported Elo")
+        self.configured_elo = elo
 
 
 def scripted_input(*answers: str):
@@ -136,3 +149,37 @@ def test_good_move_output_does_not_show_a_mistake_theme() -> None:
     )
 
     assert not any(line.startswith("Theme:") for line in output)
+
+
+def test_terminal_application_can_open_practice_when_no_position_is_due() -> None:
+    output: list[str] = []
+    game = TerminalGame(
+        ScriptedEngine(),
+        input_fn=scripted_input("2", "1"),
+        output_fn=output.append,
+    )
+    practice = MagicMock()
+    practice.next_position.return_value = None
+
+    TerminalApplication(game, practice_service=practice).run()
+
+    practice.next_position.assert_called_once()
+    assert "No practice positions are due right now." in output
+
+
+def test_user_selects_opponent_elo_before_play() -> None:
+    output: list[str] = []
+    opponent = ConfigurableScriptedEngine()
+    game = TerminalGame(
+        ScriptedEngine(),
+        opponent_engine=opponent,
+        input_fn=scripted_input("w", "1", "1000", "1800", "quit"),
+        output_fn=output.append,
+    )
+
+    result = game.run()
+
+    assert result is None
+    assert opponent.configured_elo == 1800
+    assert "Please enter an Elo between 1320 and 3190." in output
+    assert "Opponent strength set to approximately 1800 Elo." in output

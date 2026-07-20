@@ -339,6 +339,46 @@ class CommentaryService:
             )
         return result
 
+    def generate_for_review(
+        self,
+        analysis: MoveAnalysis,
+        classification: MoveClassification,
+        *,
+        level: UserLevel = UserLevel.BEGINNER,
+        theme_detection: ThemeDetection | None = None,
+    ) -> CommentaryResult:
+        """Explain an incorrect practice answer, using AI for every quality."""
+        fallback = self.template.generate(
+            analysis,
+            classification,
+            level=level,
+            theme_detection=theme_detection,
+        )
+        if self.ai is None:
+            return fallback
+        try:
+            result = self.ai.generate(
+                analysis,
+                classification,
+                level=level,
+                theme_detection=theme_detection,
+            )
+        except Exception as error:
+            return CommentaryResult(
+                text=fallback.text,
+                level=fallback.level,
+                source="template",
+                fallback_reason=type(error).__name__,
+            )
+        if not result.text.strip():
+            return CommentaryResult(
+                text=fallback.text,
+                level=fallback.level,
+                source="template",
+                fallback_reason="empty_ai_response",
+            )
+        return result
+
 
 def create_commentary_service(
     *, provider: str | None, api_key: str | None, model: str | None
