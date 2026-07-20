@@ -109,8 +109,19 @@ def test_repository_loads_and_updates_a_due_practice_position() -> None:
     now = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
 
     due = repository.due_practice_position(username="student", as_of=now)
+    games = repository.practice_games(username="student", as_of=now)
 
     assert due is not None
+    assert len(games) == 1
+    assert games[0].id == due.game_id
+    assert games[0].mistake_count == 1
+    assert games[0].due_count == 1
+    positions = repository.practice_positions_for_game(
+        username="student", game_id=games[0].id, as_of=now
+    )
+    assert len(positions) == 1
+    assert positions[0].played_move == "f2f3"
+    assert positions[0].ply_number == 1
     assert due.fen == analyzed_blunder().analysis.fen_before
     assert due.solution_moves[0] == "e2e4"
     updated = repository.record_practice_attempt(
@@ -129,6 +140,21 @@ def test_repository_loads_and_updates_a_due_practice_position() -> None:
     assert updated.attempts == 1
     assert updated.successful_attempts == 1
     assert repository.due_practice_position(username="student", as_of=now) is None
+    progress = repository.progress_summary(username="student", as_of=now)
+    assert progress.total_games == 1
+    assert progress.total_analyzed_moves == 1
+    assert progress.total_mistakes == 1
+    assert progress.most_common_mistake is not None
+    assert progress.most_common_mistake.theme is MistakeTheme.KING_SAFETY
+    assert progress.pending_positions == 0
+    assert progress.learning_positions == 1
+    assert progress.mastered_positions == 0
+    assert progress.total_practice_attempts == 1
+    assert progress.correct_practice_attempts == 1
+    assert progress.success_rate == 1.0
+    assert progress.recent_success_rate == 1.0
+    assert progress.success_rate_change is None
+    assert progress.next_review_at is not None
     with database.session() as session:
         attempt = session.scalar(select(PracticeAttemptRecord))
         assert attempt is not None
@@ -137,4 +163,24 @@ def test_repository_loads_and_updates_a_due_practice_position() -> None:
         assert attempt.scheduled_review_at.replace(tzinfo=timezone.utc) == (
             now + timedelta(days=1)
         )
+    database.close()
+
+
+def test_progress_summary_is_empty_for_an_unknown_user() -> None:
+    database = Database("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(database.engine)
+    repository = SQLAlchemyGameHistoryRepository(database)
+
+    progress = repository.progress_summary(
+        username="unknown",
+        as_of=datetime(2026, 7, 20, tzinfo=timezone.utc),
+    )
+
+    assert progress.total_games == 0
+    assert progress.total_analyzed_moves == 0
+    assert progress.total_mistakes == 0
+    assert progress.mistake_counts == ()
+    assert progress.total_practice_attempts == 0
+    assert progress.success_rate is None
+    assert progress.next_review_at is None
     database.close()

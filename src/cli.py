@@ -24,6 +24,7 @@ from src.move_classifier import MoveClassifier
 from src.report import GameReportBuilder
 from src.services.history_service import HistoryService
 from src.services.practice_service import PracticeMoveError, PracticeService
+from src.services.progress_service import ProgressService
 
 InputFunction = Callable[[str], str]
 OutputFunction = Callable[[str], None]
@@ -244,7 +245,7 @@ class TerminalGame:
             level=self.user_level,
             theme_detection=theme_detection,
         )
-        self.output(f"Coach [{explanation.source.title()}]: {explanation.text}")
+        self.output(f"Coach: {explanation.text}")
         return explanation
 
     def _save_history(self, report: GameReport) -> None:
@@ -338,9 +339,11 @@ class TerminalApplication:
         game: TerminalGame,
         *,
         practice_service: PracticeService | None = None,
+        progress_service: ProgressService | None = None,
     ) -> None:
         self.game = game
         self.practice_service = practice_service
+        self.progress_service = progress_service
         self.input = game.input
         self.output = game.output
 
@@ -350,15 +353,90 @@ class TerminalApplication:
             self.output("Chess Improvement Coach")
             self.output("1. Play against Stockfish")
             self.output("2. Review past mistakes")
-            choice = self.input("Choose an option [1/2, or 'quit']: ").strip().lower()
+            self.output("3. View progress")
+            choice = self.input(
+                "Choose an option [1/2/3, or 'quit']: "
+            ).strip().lower()
             if choice in {"1", "play"}:
                 return self.game.run()
             if choice in {"2", "review", "practice"}:
                 self._run_practice()
                 return None
+            if choice in {"3", "progress"}:
+                self._show_progress()
+                return None
             if choice in {"quit", "exit", "q"}:
                 return None
-            self.output("Please enter 1, 2, or 'quit'.")
+            self.output("Please enter 1, 2, 3, or 'quit'.")
+
+    def _show_progress(self) -> None:
+        if self.progress_service is None:
+            self.output("Progress reporting requires a configured database.")
+            return
+        try:
+            summary = self.progress_service.summary()
+        except Exception as error:
+            self.output(
+                "Progress could not be loaded "
+                f"({type(error).__name__})."
+            )
+            return
+
+        self.output("")
+        self.output("=== Personal Progress ===")
+        self.output(f"Completed games: {summary.total_games}")
+        self.output(f"Analyzed moves: {summary.total_analyzed_moves}")
+        self.output(f"Detected mistakes: {summary.total_mistakes}")
+        common = summary.most_common_mistake
+        self.output(
+            "Most common mistake: "
+            + (f"{common.theme.value} ({common.count})" if common else "None")
+        )
+        if summary.mistake_counts:
+            themes = ", ".join(
+                f"{item.theme.value}: {item.count}"
+                for item in summary.mistake_counts
+            )
+            self.output(f"Mistake themes: {themes}")
+        self.output(
+            "Practice positions: "
+            f"pending={summary.pending_positions}, "
+            f"learning={summary.learning_positions}, "
+            f"mastered={summary.mastered_positions}"
+        )
+        self.output(f"Due now: {summary.due_positions}")
+        self.output(f"Practice attempts: {summary.total_practice_attempts}")
+        self.output(
+            f"Correct answers: {summary.correct_practice_attempts}"
+        )
+        self.output(
+            "Success rate: "
+            + self._format_percentage(summary.success_rate)
+        )
+        self.output(
+            "Recent success rate (last 10): "
+            + self._format_percentage(summary.recent_success_rate)
+        )
+        change = summary.success_rate_change
+        self.output(
+            "Recent change: "
+            + (
+                f"{change * 100:+.1f} percentage points"
+                if change is not None
+                else "Not enough data (20 attempts required)"
+            )
+        )
+        if summary.due_positions:
+            next_review = "Available now"
+        elif summary.next_review_at is not None:
+            next_review = f"{summary.next_review_at:%Y-%m-%d %H:%M UTC}"
+        else:
+            next_review = "No review scheduled"
+        self.output(f"Next review: {next_review}")
+
+    @staticmethod
+    def _format_percentage(value: float | None) -> str:
+        return f"{value:.1%}" if value is not None else "N/A"
 
     def _run_practice(self) -> None:
         if self.practice_service is None:
@@ -424,11 +502,7 @@ class TerminalApplication:
                 if result.theme_detection is not None:
                     self.output(f"Theme: {result.theme_detection.theme.value}")
                 if result.commentary is not None:
-                    self.output(
-                        "Coach "
-                        f"[{result.commentary.source.title()}]: "
-                        f"{result.commentary.text}"
-                    )
+                    self.output(f"Coach: {result.commentary.text}")
             self.output(
                 "Next review: "
                 f"{result.updated_position.next_review_at:%Y-%m-%d %H:%M UTC}"

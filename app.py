@@ -8,6 +8,7 @@ from src.engine import EngineError, StockfishEngine
 from src.repositories.sqlalchemy_repository import SQLAlchemyGameHistoryRepository
 from src.services.history_service import HistoryService
 from src.services.practice_service import PracticeService
+from src.services.progress_service import ProgressService
 
 
 def main() -> None:
@@ -49,9 +50,18 @@ def main() -> None:
                         if repository is not None
                         else None
                     )
+                    progress_service = (
+                        ProgressService(
+                            repository,
+                            username=settings.coach_username,
+                        )
+                        if repository is not None
+                        else None
+                    )
                     TerminalApplication(
                         game,
                         practice_service=practice_service,
+                        progress_service=progress_service,
                     ).run()
         finally:
             if database is not None:

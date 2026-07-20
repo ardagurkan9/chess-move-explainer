@@ -1,14 +1,17 @@
 import chess
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 from src.cli import TerminalApplication, TerminalGame
 from src.models import (
     EngineResult,
+    MistakeTheme,
     MoveAnalysis,
     MoveClassification,
     MoveQuality,
     UserLevel,
 )
+from src.repositories.interfaces import MistakeSummary, ProgressSummary
 
 
 class ScriptedEngine:
@@ -99,7 +102,7 @@ def test_invalid_color_and_move_are_retried() -> None:
     assert any("Please enter" in line for line in output)
     assert sum("Invalid move" in line for line in output) == 2
     assert any("Analysis:" in line for line in output)
-    assert any("Coach [Template]:" in line for line in output)
+    assert any("Coach:" in line for line in output)
 
 
 def test_choosing_black_makes_stockfish_play_first() -> None:
@@ -183,3 +186,39 @@ def test_user_selects_opponent_elo_before_play() -> None:
     assert opponent.configured_elo == 1800
     assert "Please enter an Elo between 1320 and 3190." in output
     assert "Opponent strength set to approximately 1800 Elo." in output
+
+
+def test_terminal_application_displays_personal_progress() -> None:
+    output: list[str] = []
+    game = TerminalGame(
+        ScriptedEngine(),
+        input_fn=scripted_input("3"),
+        output_fn=output.append,
+    )
+    progress_service = MagicMock()
+    progress_service.summary.return_value = ProgressSummary(
+        total_games=4,
+        total_analyzed_moves=80,
+        total_mistakes=5,
+        mistake_counts=(MistakeSummary(MistakeTheme.KING_SAFETY, 3),),
+        pending_positions=1,
+        learning_positions=2,
+        mastered_positions=2,
+        due_positions=0,
+        total_practice_attempts=20,
+        correct_practice_attempts=15,
+        success_rate=0.75,
+        recent_success_rate=0.8,
+        previous_success_rate=0.7,
+        success_rate_change=0.1,
+        next_review_at=datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc),
+    )
+
+    TerminalApplication(game, progress_service=progress_service).run()
+
+    assert "=== Personal Progress ===" in output
+    assert "Completed games: 4" in output
+    assert "Most common mistake: KING_SAFETY (3)" in output
+    assert "Success rate: 75.0%" in output
+    assert "Recent change: +10.0 percentage points" in output
+    assert "Next review: 2026-07-21 12:00 UTC" in output

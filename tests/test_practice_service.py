@@ -20,6 +20,12 @@ class FakeRepository:
     def due_practice_position(self, *, username: str, as_of: datetime):
         return self.position if self.position.next_review_at is None or self.position.next_review_at <= as_of else None
 
+    def practice_games(self, *, username: str, as_of: datetime):
+        return ("game-list", username, as_of)
+
+    def practice_positions_for_game(self, *, username: str, game_id: int, as_of: datetime):
+        return (self.position,) if game_id == 1 else ()
+
     def record_practice_attempt(self, **values):
         self.last_attempt = values
         self.position = replace(
@@ -68,6 +74,16 @@ def test_correct_answer_is_scheduled_without_engine_or_ai_call() -> None:
     assert result.updated_position.next_review_at == NOW + timedelta(days=1)
     engine.analyze.assert_not_called()
     commentary.generate_for_review.assert_not_called()
+
+
+def test_practice_service_lists_games_and_positions_for_selected_game() -> None:
+    practice, repository, _, _ = service(position())
+
+    games = practice.games(now=NOW)
+    positions = practice.positions_for_game(1, now=NOW)
+
+    assert games == ("game-list", "student", NOW)
+    assert positions == (repository.position,)
 
 
 def test_wrong_legal_answer_is_analyzed_and_explained() -> None:

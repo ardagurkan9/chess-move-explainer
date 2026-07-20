@@ -17,7 +17,12 @@ from src.db_models import (
     UserRecord,
 )
 from src.models import AnalyzedMove, GameReport, MistakeTheme, MoveQuality, UserLevel
-from src.repositories.interfaces import MistakeSummary, PracticePosition
+from src.repositories.interfaces import (
+    MistakeSummary,
+    PracticeGame,
+    PracticePosition,
+    ProgressSummary,
+)
 
 
 class SQLAlchemyGameHistoryRepository:
@@ -129,9 +134,10 @@ class SQLAlchemyGameHistoryRepository:
     ) -> PracticePosition | None:
         """Return the oldest due position for the requested user."""
         statement = (
-            select(PracticePositionRecord, MistakeRecord)
+            select(PracticePositionRecord, MistakeRecord, MoveAnalysisRecord)
             .join(PracticePositionRecord.user)
             .join(PracticePositionRecord.source_mistake)
+            .join(MistakeRecord.move_analysis)
             .where(
                 UserRecord.username == username.strip(),
                 or_(
@@ -153,8 +159,188 @@ class SQLAlchemyGameHistoryRepository:
             row = session.execute(statement).first()
             if row is None:
                 return None
-            position, mistake = row
-            return self._practice_position(position, mistake)
+            position, mistake, move_analysis = row
+            return self._practice_position(position, mistake, move_analysis)
+
+    def practice_games(
+        self, *, username: str, as_of: datetime
+    ) -> tuple[PracticeGame, ...]:
+        """List the user's games that produced at least one practice position."""
+        due_expression = case(
+            (
+                or_(
+                    PracticePositionRecord.next_review_at.is_(None),
+                    PracticePositionRecord.next_review_at <= as_of,
+                ),
+                1,
+            ),
+            else_=0,
+        )
+        statement = (
+            select(
+                GameRecord.id,
+                GameRecord.completed_at,
+                GameRecord.result,
+                func.count(PracticePositionRecord.id),
+                func.sum(due_expression),
+            )
+            .join(GameRecord.user)
+            .join(GameRecord.move_analyses)
+            .join(MoveAnalysisRecord.mistake)
+            .join(MistakeRecord.practice_positions)
+            .where(UserRecord.username == username.strip())
+            .group_by(GameRecord.id)
+            .order_by(GameRecord.completed_at.desc(), GameRecord.id.desc())
+        )
+        with self.database.session() as session:
+            rows = session.execute(statement).all()
+        return tuple(
+            PracticeGame(
+                id=game_id,
+                completed_at=completed_at,
+                result=result,
+                mistake_count=mistake_count,
+                due_count=due_count or 0,
+            )
+            for game_id, completed_at, result, mistake_count, due_count in rows
+        )
+
+    def practice_positions_for_game(
+        self, *, username: str, game_id: int, as_of: datetime
+    ) -> tuple[PracticePosition, ...]:
+        """Return due mistakes from one game owned by the selected user."""
+        statement = (
+            select(PracticePositionRecord, MistakeRecord, MoveAnalysisRecord)
+            .join(PracticePositionRecord.user)
+            .join(PracticePositionRecord.source_mistake)
+            .join(MistakeRecord.move_analysis)
+            .join(MoveAnalysisRecord.game)
+            .where(
+                UserRecord.username == username.strip(),
+                GameRecord.id == game_id,
+                or_(
+                    PracticePositionRecord.next_review_at.is_(None),
+                    PracticePositionRecord.next_review_at <= as_of,
+                ),
+            )
+            .order_by(MoveAnalysisRecord.ply_number)
+        )
+        with self.database.session() as session:
+            rows = session.execute(statement).all()
+            return tuple(
+                self._practice_position(position, mistake, move_analysis)
+                for position, mistake, move_analysis in rows
+            )
+
+    def progress_summary(
+        self, *, username: str, as_of: datetime
+    ) -> ProgressSummary:
+        """Aggregate portfolio-safe progress metrics from persisted records."""
+        clean_username = username.strip()
+        user_filter = UserRecord.username == clean_username
+        with self.database.session() as session:
+            total_games = session.scalar(
+                select(func.count(GameRecord.id))
+                .join(GameRecord.user)
+                .where(user_filter)
+            ) or 0
+            total_moves = session.scalar(
+                select(func.count(MoveAnalysisRecord.id))
+                .join(MoveAnalysisRecord.game)
+                .join(GameRecord.user)
+                .where(user_filter)
+            ) or 0
+            mistake_rows = session.execute(
+                select(MistakeRecord.theme, func.count(MistakeRecord.id))
+                .join(MistakeRecord.move_analysis)
+                .join(MoveAnalysisRecord.game)
+                .join(GameRecord.user)
+                .where(user_filter)
+                .group_by(MistakeRecord.theme)
+                .order_by(func.count(MistakeRecord.id).desc(), MistakeRecord.theme)
+            ).all()
+            status_rows = session.execute(
+                select(PracticePositionRecord.status, func.count(PracticePositionRecord.id))
+                .join(PracticePositionRecord.user)
+                .where(user_filter)
+                .group_by(PracticePositionRecord.status)
+            ).all()
+            attempt_rows = session.scalars(
+                select(PracticeAttemptRecord.correct)
+                .join(PracticeAttemptRecord.practice_position)
+                .join(PracticePositionRecord.user)
+                .where(user_filter)
+                .order_by(
+                    PracticeAttemptRecord.attempted_at.desc(),
+                    PracticeAttemptRecord.id.desc(),
+                )
+                .limit(20)
+            ).all()
+            attempt_totals = session.execute(
+                select(
+                    func.count(PracticeAttemptRecord.id),
+                    func.count(PracticeAttemptRecord.id).filter(
+                        PracticeAttemptRecord.correct.is_(True)
+                    ),
+                )
+                .join(PracticeAttemptRecord.practice_position)
+                .join(PracticePositionRecord.user)
+                .where(user_filter)
+            ).one()
+            due_positions = session.scalar(
+                select(func.count(PracticePositionRecord.id))
+                .join(PracticePositionRecord.user)
+                .where(
+                    user_filter,
+                    or_(
+                        PracticePositionRecord.next_review_at.is_(None),
+                        PracticePositionRecord.next_review_at <= as_of,
+                    ),
+                )
+            ) or 0
+            next_review_at = session.scalar(
+                select(func.min(PracticePositionRecord.next_review_at))
+                .join(PracticePositionRecord.user)
+                .where(
+                    user_filter,
+                    PracticePositionRecord.next_review_at > as_of,
+                )
+            )
+
+        mistakes = tuple(
+            MistakeSummary(theme=theme, count=count)
+            for theme, count in mistake_rows
+        )
+        statuses = {status: count for status, count in status_rows}
+        total_attempts, correct_attempts = attempt_totals
+        recent = list(attempt_rows[:10])
+        previous = list(attempt_rows[10:20])
+        recent_rate = self._success_rate(recent)
+        previous_rate = self._success_rate(previous) if len(previous) == 10 else None
+        change = (
+            recent_rate - previous_rate
+            if recent_rate is not None and previous_rate is not None
+            else None
+        )
+        return ProgressSummary(
+            total_games=total_games,
+            total_analyzed_moves=total_moves,
+            total_mistakes=sum(item.count for item in mistakes),
+            mistake_counts=mistakes,
+            pending_positions=statuses.get(PracticeStatus.PENDING, 0),
+            learning_positions=statuses.get(PracticeStatus.LEARNING, 0),
+            mastered_positions=statuses.get(PracticeStatus.MASTERED, 0),
+            due_positions=due_positions,
+            total_practice_attempts=total_attempts,
+            correct_practice_attempts=correct_attempts,
+            success_rate=(
+                correct_attempts / total_attempts if total_attempts else None
+            ),
+            recent_success_rate=recent_rate,
+            previous_success_rate=previous_rate,
+            success_rate_change=change,
+            next_review_at=next_review_at,
+        )
 
     def record_practice_attempt(
         self,
@@ -209,7 +395,9 @@ class SQLAlchemyGameHistoryRepository:
 
     @staticmethod
     def _practice_position(
-        position: PracticePositionRecord, mistake: MistakeRecord
+        position: PracticePositionRecord,
+        mistake: MistakeRecord,
+        move_analysis: MoveAnalysisRecord | None = None,
     ) -> PracticePosition:
         return PracticePosition(
             id=position.id,
@@ -221,4 +409,15 @@ class SQLAlchemyGameHistoryRepository:
             attempts=position.attempts,
             successful_attempts=position.successful_attempts,
             next_review_at=position.next_review_at,
+            game_id=move_analysis.game_id if move_analysis is not None else None,
+            played_move=(
+                move_analysis.played_move if move_analysis is not None else None
+            ),
+            ply_number=(
+                move_analysis.ply_number if move_analysis is not None else None
+            ),
         )
+
+    @staticmethod
+    def _success_rate(attempts: list[bool]) -> float | None:
+        return sum(attempts) / len(attempts) if attempts else None

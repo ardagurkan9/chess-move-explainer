@@ -17,7 +17,11 @@ from src.models import (
     UserLevel,
 )
 from src.move_classifier import MoveClassifier
-from src.repositories.interfaces import GameHistoryRepository, PracticePosition
+from src.repositories.interfaces import (
+    GameHistoryRepository,
+    PracticeGame,
+    PracticePosition,
+)
 
 
 class PracticeMoveError(ValueError):
@@ -65,6 +69,23 @@ class PracticeService:
         """Return the next position whose review time has arrived."""
         return self.repository.due_practice_position(
             username=self.username,
+            as_of=now or datetime.now(timezone.utc),
+        )
+
+    def games(self, *, now: datetime | None = None) -> tuple[PracticeGame, ...]:
+        """Return saved games containing mistake positions."""
+        return self.repository.practice_games(
+            username=self.username,
+            as_of=now or datetime.now(timezone.utc),
+        )
+
+    def positions_for_game(
+        self, game_id: int, *, now: datetime | None = None
+    ) -> tuple[PracticePosition, ...]:
+        """Return due mistakes for the selected game."""
+        return self.repository.practice_positions_for_game(
+            username=self.username,
+            game_id=game_id,
             as_of=now or datetime.now(timezone.utc),
         )
 
