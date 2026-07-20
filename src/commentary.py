@@ -7,11 +7,13 @@ from src.models import (
     CommentaryResult,
     MoveAnalysis,
     MoveClassification,
+    MoveContext,
     MoveQuality,
     MistakeTheme,
     ThemeDetection,
     UserLevel,
 )
+from src.move_context import MoveContextAnalyzer
 
 
 QUALITY_OPENINGS: dict[MoveQuality, str] = {
@@ -23,9 +25,7 @@ QUALITY_OPENINGS: dict[MoveQuality, str] = {
     MoveQuality.BLUNDER: "This was a costly mistake.",
 }
 
-AI_EXPLANATION_QUALITIES = frozenset(
-    {MoveQuality.INACCURACY, MoveQuality.MISTAKE, MoveQuality.BLUNDER}
-)
+AI_EXPLANATION_QUALITIES = frozenset(MoveQuality)
 
 
 class CommentaryGenerator(Protocol):
@@ -38,6 +38,7 @@ class CommentaryGenerator(Protocol):
         *,
         level: UserLevel = UserLevel.BEGINNER,
         theme_detection: ThemeDetection | None = None,
+        move_context: MoveContext | None = None,
     ) -> CommentaryResult: ...
 
 
@@ -55,6 +56,7 @@ class TemplateCommentary:
         *,
         level: UserLevel = UserLevel.BEGINNER,
         theme_detection: ThemeDetection | None = None,
+        move_context: MoveContext | None = None,
     ) -> CommentaryResult:
         """Build an explanation using only supplied engine analysis."""
         if analysis.allowed_forced_mate:
@@ -70,10 +72,9 @@ class TemplateCommentary:
         else:
             core = self._standard_explanation(analysis, classification)
 
-        detail = self._level_detail(analysis, level)
-        text = f"{QUALITY_OPENINGS[classification.quality]} {core}"
-        if detail:
-            text = f"{text} {detail}"
+        context = move_context or MoveContextAnalyzer().analyze(analysis)
+        context_text = " ".join(context.facts[:2])
+        text = f"{QUALITY_OPENINGS[classification.quality]} {context_text} {core}"
         if (
             theme_detection is not None
             and theme_detection.theme is not MistakeTheme.GENERAL_ERROR
@@ -106,57 +107,20 @@ class TemplateCommentary:
                 f"{analysis.played_move} was nearly identical in strength to "
                 f"Stockfish's top choice, {analysis.best_move}."
             )
-        loss_text = (
-            f" The evaluation dropped by about {loss / 100:.2f} pawns "
-            f"({loss} centipawns)."
-            if loss is not None
-            else " There is a forced mate in the position."
-        )
+        if loss is not None and loss <= 40:
+            return (
+                f"{analysis.played_move} was a solid move. Stockfish slightly "
+                f"preferred {analysis.best_move}."
+            )
+        if loss is None:
+            return (
+                f"You chose {analysis.played_move}, while Stockfish preferred "
+                f"{analysis.best_move}. There is a forced mate in the position."
+            )
         return (
-            f"You chose {analysis.played_move}, but {analysis.best_move} was "
-            f"stronger.{loss_text}"
+            f"{analysis.played_move} made the position harder to handle. "
+            f"Stockfish preferred {analysis.best_move}."
         )
-
-    def _level_detail(self, analysis: MoveAnalysis, level: UserLevel) -> str:
-        if level is UserLevel.BEGINNER:
-            return "A useful habit is to pause and compare these two moves before continuing."
-
-        evaluation = self._evaluation_detail(analysis)
-        if level is UserLevel.INTERMEDIATE:
-            return evaluation
-
-        pv = " ".join(analysis.before.pv)
-        depth = analysis.before.depth
-        depth_text = f" at depth {depth}" if depth is not None else ""
-        line_text = f" Stockfish's line{depth_text}: {pv}." if pv else ""
-        return f"{evaluation}{line_text}"
-
-    def _evaluation_detail(self, analysis: MoveAnalysis) -> str:
-        before = analysis.before.score_cp
-        after = analysis.after.score_cp
-        scores = (
-            f"{self._format_score(analysis.before)} to "
-            f"{self._format_score(analysis.after)}"
-        )
-        if before is None or after is None:
-            return f"The engine evaluation changed from {scores}."
-
-        change = after - before
-        if abs(change) <= 15:
-            return f"The position stayed roughly stable, moving from {scores}."
-        if change > 0:
-            return f"From your perspective, the position improved from {scores}."
-        return f"From your perspective, the position worsened from {scores}."
-
-    @staticmethod
-    def _format_score(result: object) -> str:
-        mate = getattr(result, "mate", None)
-        if mate is not None:
-            return f"mate {mate:+d}"
-        score_cp = getattr(result, "score_cp", None)
-        if score_cp is None:
-            return "an unknown score"
-        return f"{score_cp / 100:+.2f}"
 
 
 class GeminiCommentary:
@@ -165,17 +129,20 @@ class GeminiCommentary:
     SYSTEM_INSTRUCTION = (
         "You are a friendly, concise chess coach explaining a verified Stockfish analysis. "
         "Sound like a human coach speaking directly to a student, not an engine report. "
-        "Lead with the practical lesson and use simple, varied language. "
+        "Lead with what the move concretely accomplished, using verified_move_context. "
+        "Give a practical lesson only when it follows directly from verified evidence. "
+        "Do not recite centipawn values or numeric evaluation changes; the UI already shows them. "
         "Do not choose a different best move. Do not invent a tactic, threat, "
         "mistake theme, board feature, opening name, plan, positional concept, "
         "or continuation. You may explain a verified_theme only when it is "
         "present, using only verified_evidence. Do not explain why either move "
         "is good or bad beyond that evidence. The "
-        "only permitted facts are the classification, centipawn loss, numeric "
-        "evaluation change, mate flags, played move, Stockfish best move, and "
-        "any explicit verified theme evidence in the payload. Mention both moves "
-        "exactly as supplied. Avoid labels such as 'verified theme', robotic phrases, "
-        "and raw centipawn jargon when a plain-language description is enough. Write "
+        "only permitted facts are the verified move context, classification, "
+        "centipawn loss, numeric evaluation change, mate flags, played move, Stockfish best move, and "
+        "any explicit verified theme evidence in the payload. Avoid labels such as "
+        "'verified theme', robotic phrases, "
+        "and raw engine jargon. Mention the played move exactly as supplied; mention "
+        "Stockfish's best move only when comparing alternatives is useful. Write "
         "at most two short sentences in English with no markdown."
     )
 
@@ -212,10 +179,16 @@ class GeminiCommentary:
         *,
         level: UserLevel = UserLevel.BEGINNER,
         theme_detection: ThemeDetection | None = None,
+        move_context: MoveContext | None = None,
     ) -> CommentaryResult:
         """Request and validate a grounded explanation from Gemini."""
+        context = move_context or MoveContextAnalyzer().analyze(analysis)
         payload = self._payload(
-            analysis, classification, level, theme_detection=theme_detection
+            analysis,
+            classification,
+            level,
+            theme_detection=theme_detection,
+            move_context=context,
         )
         try:
             response = self.client.models.generate_content(
@@ -241,6 +214,7 @@ class GeminiCommentary:
         level: UserLevel,
         *,
         theme_detection: ThemeDetection | None,
+        move_context: MoveContext | None,
     ) -> dict[str, object]:
         payload: dict[str, object] = {
             "task": "Explain this verified Stockfish move analysis.",
@@ -266,6 +240,8 @@ class GeminiCommentary:
                 "Do not infer anything from your general knowledge of the moves.",
             ],
         }
+        if move_context is not None:
+            payload["verified_move_context"] = list(move_context.facts)
         if theme_detection is not None:
             payload["verified_theme"] = theme_detection.theme.value
             payload["verified_evidence"] = list(theme_detection.evidence)
@@ -278,9 +254,9 @@ class GeminiCommentary:
             raise GeminiCommentaryError("Gemini returned an empty explanation.")
         if len(text) > 2000:
             raise GeminiCommentaryError("Gemini explanation is unexpectedly long.")
-        if analysis.played_move not in text or analysis.best_move not in text:
+        if analysis.played_move not in text:
             raise GeminiCommentaryError(
-                "Gemini explanation does not reference the verified moves."
+                "Gemini explanation does not reference the played move."
             )
 
 
@@ -302,13 +278,16 @@ class CommentaryService:
         *,
         level: UserLevel = UserLevel.BEGINNER,
         theme_detection: ThemeDetection | None = None,
+        move_context: MoveContext | None = None,
     ) -> CommentaryResult:
         """Return AI commentary when safe, otherwise deterministic commentary."""
+        context = move_context or MoveContextAnalyzer().analyze(analysis)
         fallback = self.template.generate(
             analysis,
             classification,
             level=level,
             theme_detection=theme_detection,
+            move_context=context,
         )
         if self.ai is None:
             return fallback
@@ -321,6 +300,7 @@ class CommentaryService:
                 classification,
                 level=level,
                 theme_detection=theme_detection,
+                move_context=context,
             )
         except Exception as error:
             return CommentaryResult(
@@ -346,13 +326,16 @@ class CommentaryService:
         *,
         level: UserLevel = UserLevel.BEGINNER,
         theme_detection: ThemeDetection | None = None,
+        move_context: MoveContext | None = None,
     ) -> CommentaryResult:
         """Explain an incorrect practice answer, using AI for every quality."""
+        context = move_context or MoveContextAnalyzer().analyze(analysis)
         fallback = self.template.generate(
             analysis,
             classification,
             level=level,
             theme_detection=theme_detection,
+            move_context=context,
         )
         if self.ai is None:
             return fallback
@@ -362,6 +345,7 @@ class CommentaryService:
                 classification,
                 level=level,
                 theme_detection=theme_detection,
+                move_context=context,
             )
         except Exception as error:
             return CommentaryResult(

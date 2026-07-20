@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import chess
 import pytest
 
 from src.commentary import (
@@ -30,13 +31,15 @@ def move_analysis(
     missed_mate: bool = False,
     allowed_mate: bool = False,
 ) -> MoveAnalysis:
+    board = chess.Board()
+    board.push_uci(played_move)
     before = EngineResult(best_move, 69, None, (best_move, "e7e5"), 12)
     after = EngineResult("e7e5", -84, None, ("e7e5",), 12)
     return MoveAnalysis(
         played_move=played_move,
         player_is_white=True,
-        fen_before="before",
-        fen_after="after",
+        fen_before=chess.STARTING_FEN,
+        fen_after=board.fen(),
         before=before,
         after=after,
         centipawn_loss=loss,
@@ -63,25 +66,41 @@ def test_explanation_is_grounded_in_analysis_for_every_level(
     assert result.level is level
     assert "f2f3" in result.text
     assert "e2e4" in result.text
-    assert "153 centipawns" in result.text
+    assert "pawn moved from f2 to f3" in result.text
+    assert "1.53 pawns" not in result.text
 
 
-def test_intermediate_explanation_includes_evaluation_change() -> None:
+def test_explanation_does_not_repeat_numeric_evaluation() -> None:
     result = TemplateCommentary().generate(
         move_analysis(), classification(), level=UserLevel.INTERMEDIATE
     )
 
-    assert "+0.69" in result.text
-    assert "-0.84" in result.text
+    assert "+0.69" not in result.text
+    assert "-0.84" not in result.text
+    assert "pawn moved from f2 to f3" in result.text
 
 
-def test_advanced_explanation_includes_depth_and_pv() -> None:
+def test_advanced_explanation_does_not_dump_engine_line() -> None:
     result = TemplateCommentary().generate(
         move_analysis(), classification(), level=UserLevel.ADVANCED
     )
 
-    assert "depth 12" in result.text
-    assert "e2e4 e7e5" in result.text
+    assert "depth 12" not in result.text
+    assert "e2e4 e7e5" not in result.text
+    assert "e2e4" in result.text
+
+
+def test_small_difference_is_described_as_a_slight_preference() -> None:
+    result = TemplateCommentary().generate(
+        move_analysis(played_move="d2d4", best_move="e2e4", loss=16),
+        classification(MoveQuality.EXCELLENT, 16),
+        level=UserLevel.ADVANCED,
+    )
+
+    assert "solid move" in result.text
+    assert "slightly preferred e2e4" in result.text
+    assert "0.16 pawns" not in result.text
+    assert "Stockfish's line" not in result.text
 
 
 def test_best_move_explanation_mentions_stockfish_match() -> None:
@@ -145,6 +164,9 @@ def test_gemini_sends_structured_grounded_payload() -> None:
     assert payload["played_move"] == "f2f3"
     assert payload["stockfish_best_move"] == "e2e4"
     assert payload["centipawn_loss"] == 153
+    assert payload["verified_move_context"] == [
+        "The pawn moved from f2 to f3."
+    ]
     assert "fen_before" not in payload
     assert "principal_variation" not in payload
     assert call["config"]["temperature"] == 0.2
@@ -154,7 +176,7 @@ def test_gemini_sends_structured_grounded_payload() -> None:
     ("text", "message"),
     [
         ("", "empty"),
-        ("A vague explanation with no verified moves.", "verified moves"),
+        ("A vague explanation with no verified moves.", "played move"),
         ("f2f3 " + "x" * 2000 + " e2e4", "long"),
     ],
 )
@@ -180,16 +202,21 @@ def test_commentary_service_uses_gemini_for_significant_errors() -> None:
     ai.generate.assert_called_once()
 
 
-def test_commentary_service_skips_ai_for_good_moves() -> None:
+def test_commentary_service_uses_ai_for_good_moves() -> None:
     ai = MagicMock()
+    ai.generate.return_value = SimpleNamespace(
+        text="f2f3 moved the pawn but weakened its nearby diagonals.",
+        level=UserLevel.BEGINNER,
+        source="gemini",
+    )
     service = CommentaryService(ai=ai)
 
     result = service.generate(
         move_analysis(loss=50), classification(MoveQuality.GOOD, 50)
     )
 
-    assert result.source == "template"
-    ai.generate.assert_not_called()
+    assert result.source == "gemini"
+    ai.generate.assert_called_once()
 
 
 def test_review_commentary_uses_ai_even_for_a_good_incorrect_answer() -> None:

@@ -88,6 +88,16 @@ class CommentaryResult:
     fallback_reason: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class MoveContext:
+    """Deterministic board facts that can safely ground coaching text."""
+
+    piece: str
+    from_square: str
+    to_square: str
+    facts: tuple[str, ...]
+
+
 class MistakeTheme(StrEnum):
     """Deterministically detectable mistake themes."""
 
